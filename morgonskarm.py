@@ -30,7 +30,9 @@ LAT, LON     = 59.726, 17.789      # Knivsta
 # PORT         = 8765
 PORT         = 8766
 CAST_DAYS    = {0, 1, 2, 3, 4}     # mån–fre
-CAST_FROM, CAST_TO = 6, 9          # visa på Nest Hub 06:00–09:00
+# Claude: Changed so that the window is 06:00–09:30 because trains after 09:30 aren't needed; now it works like: times instead of whole hours, used both for casting and for which trains are shown.
+# CAST_FROM, CAST_TO = 6, 9          # visa på Nest Hub 06:00–09:00
+CAST_FROM, CAST_TO = dt.time(6, 0), dt.time(9, 30)   # visa på Nest Hub 06:00–09:30
 RECAST_MIN   = 15                  # casta om var 15:e min ifall den tappat sidan
 MAX_TRAINS   = 5
 # =========================================================
@@ -98,6 +100,9 @@ def trains():
         if t.get("TimeAtLocation"):
             continue                      # har redan gått
         adv, est = iso(t["AdvertisedTimeAtLocation"]), iso(t.get("EstimatedTimeAtLocation"))
+        # Claude: Added so that only trains departing 06:00–09:30 are shown because later trains aren't needed.
+        if not CAST_FROM <= adv.time() <= CAST_TO:
+            continue
         delay = int((est - adv).total_seconds() // 60) if est else 0
         out.append({
             "time": adv.strftime("%H:%M"),
@@ -249,7 +254,9 @@ def cast_loop(url):
     casting, last = False, 0
     while True:
         now = dt.datetime.now()
-        in_window = now.weekday() in CAST_DAYS and CAST_FROM <= now.hour < CAST_TO
+        # Claude: Changed so that minutes count too (09:30, not just 09).
+        # in_window = now.weekday() in CAST_DAYS and CAST_FROM <= now.hour < CAST_TO
+        in_window = now.weekday() in CAST_DAYS and CAST_FROM <= now.time() < CAST_TO
         try:
             if in_window and (not casting or time.time() - last > RECAST_MIN * 60):
                 # Claude: Changed so that catt is run via Python because catt.exe isn't on PATH; now it works like: the same Python that runs this script starts catt.

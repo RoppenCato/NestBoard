@@ -46,6 +46,12 @@ Longer term it may become the hub for a simplified smart home (see Roadmap).
 ### API key
 Robin needs a free key from Trafikverket's own registration ("Trafikverkets öppna API för trafikinformation" on trafikverket.se), created on the profile page after logging in. Trafiklab's docs are inconsistent: some pages say Trafiklab members can get the key there, while Trafiklab support says to use Trafikverket's portal.
 
+## Update 2026-10-26 (first run done)
+- Runs at logon via Task Scheduler task **"NestBoard"** (`pythonw.exe morgonskarm.py`, no time limit, restarts on crash).
+- Key in user env var `TRV_KEY`. Port is **8766** (8765 is used by the Game Developer project). Hub is named **"Lilla rara"** (192.168.0.38).
+- Cast window and train filter: weekdays **06:00–09:30**, Mälartåg only.
+- Fixed: `TrainStation` schema 1.4, `truststore` for Trafikverket SSL, catt run via `python -m catt.cli`.
+
 ## Unverified / likely first-run issues
 - `schemaversion` values: `TrainAnnouncement` 1.9 and `TrainStation` 1.5. If Trafikverket rejects them, check the current versions in their data model docs.
 - The `TrainStation` lookup filters on `AdvertisedLocationName` = "Knivsta" / "Stockholm C". Check the exact names if the lookup fails.
