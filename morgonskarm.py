@@ -34,6 +34,8 @@ CAST_DAYS    = {0, 1, 2, 3, 4}     # mån–fre
 # CAST_FROM, CAST_TO = 6, 9          # visa på Nest Hub 06:00–09:00
 CAST_FROM, CAST_TO = dt.time(6, 0), dt.time(9, 30)   # visa på Nest Hub 06:00–09:30
 RECAST_MIN   = 15                  # casta om var 15:e min ifall den tappat sidan
+# Claude: Added so that casting is skipped on weekday days off (helgdagar, julafton etc.). Set False to cast anyway.
+SKIP_DAYS_OFF = True
 MAX_TRAINS   = 5
 # =========================================================
 
@@ -151,6 +153,27 @@ def news():
     return [i.findtext("title", "").strip() for i in root.iter("item")][:6]
 
 
+# Claude: Added day_info so that the header shows weekday, week number, name days, holidays and flag days, and so casting can skip days off (e.g. julafton); fetched once per day.
+MONTHS = ["januari", "februari", "mars", "april", "maj", "juni", "juli",
+          "augusti", "september", "oktober", "november", "december"]
+_day = {}
+def day_info(day=None):
+    day = day or dt.date.today()
+    if day not in _day:
+        raw = http(f"https://sholiday.faboul.se/dagar/v2.1/{day:%Y/%m/%d}").decode("utf-8")
+        d = json.loads(raw[raw.index("{"):])["dagar"][0]   # tjänsten skriver ibland PHP-varningar före JSON
+        _day.clear()
+        _day[day] = {
+            "date": f'{d["veckodag"]} {day.day} {MONTHS[day.month - 1]}',
+            "week": int(d["vecka"]),
+            "names": ", ".join(d.get("namnsdag", [])),
+            "holiday": d.get("helgdag", ""),
+            "flag": d.get("flaggdag", ""),
+            "day_off": d.get("arbetsfri dag") == "Ja",
+        }
+    return _day[day]
+
+
 _cache = {"t": 0, "data": None}
 _lock = threading.Lock()
 def get_data():
@@ -158,7 +181,9 @@ def get_data():
         if time.time() - _cache["t"] < 50 and _cache["data"]:
             return _cache["data"]
         data = {"updated": dt.datetime.now().strftime("%H:%M")}
-        for key, fn in (("trains", trains), ("weather", weather), ("news", news)):
+        # Claude: Added ("day", day_info) so the page gets name days etc.
+        # for key, fn in (("trains", trains), ("weather", weather), ("news", news)):
+        for key, fn in (("trains", trains), ("weather", weather), ("news", news), ("day", day_info)):
             try:
                 data[key] = fn()
             except Exception as e:
@@ -192,8 +217,11 @@ padding:7px 0;border-bottom:1px solid #232833;font-size:24px}
 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #news li:last-child{border:0}
 .err{color:#ff5c5c;font-size:14px}
+#day{font-size:18px;color:#c4c8ce}#day b{color:#e8eaed}.hol{color:#f4b400}
 </style></head><body>
-<header><div id="clock">--:--</div><div class="muted" id="upd"></div></header>
+<!-- Claude: Added the #day line next to the clock for date, week, name days, holiday and flag day. -->
+<!-- <header><div id="clock">--:--</div><div class="muted" id="upd"></div></header> -->
+<header><div style="display:flex;align-items:baseline;gap:16px"><div id="clock">--:--</div><div id="day"></div></div><div class="muted" id="upd"></div></header>
 <section class="card"><h2>Knivsta → Stockholm C</h2><div id="trains"></div></section>
 <section class="bottom">
  <div class="card"><h2>Väder Knivsta</h2><div id="weather"></div></div>
@@ -207,6 +235,10 @@ async function load(){
  try{
   const d=await (await fetch("/data")).json();
   $("upd").textContent="Uppdaterad "+d.updated;
+  // Claude: Added so the header shows e.g. "Måndag 26 oktober · v.44 · Amanda, Rasmus" plus holiday/flag day.
+  const y=d.day;
+  if(y){$("day").innerHTML=`<b>${esc(y.date)}</b> · v.${esc(y.week)}${y.names?" · 🎉 "+esc(y.names):""}`+
+   (y.holiday?` · <span class="hol">${esc(y.holiday)}</span>`:"")+(y.flag&&y.flag!==y.holiday?` · 🇸🇪 ${esc(y.flag)}`:y.flag?" 🇸🇪":"");}
   $("trains").innerHTML=d.trains_error?`<div class="err">${esc(d.trains_error)}</div>`:
    (d.trains.length?d.trains.map(t=>`<div class="train ${t.cancelled?"cx":t.delay>0?"late":""}">
     <div class="t">${t.time}</div>
@@ -257,6 +289,12 @@ def cast_loop(url):
         # Claude: Changed so that minutes count too (09:30, not just 09).
         # in_window = now.weekday() in CAST_DAYS and CAST_FROM <= now.hour < CAST_TO
         in_window = now.weekday() in CAST_DAYS and CAST_FROM <= now.time() < CAST_TO
+        # Claude: Added so that weekday days off (e.g. julafton, nyårsafton) skip casting; if the calendar service is down it casts as usual.
+        if in_window and SKIP_DAYS_OFF:
+            try:
+                in_window = not day_info()["day_off"]
+            except Exception:
+                pass
         try:
             if in_window and (not casting or time.time() - last > RECAST_MIN * 60):
                 # Claude: Changed so that catt is run via Python because catt.exe isn't on PATH; now it works like: the same Python that runs this script starts catt.
