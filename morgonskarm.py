@@ -6,7 +6,7 @@ Krav:  Python 3.11+  och  pip install catt truststore
 Kör:   python morgonskarm.py
 Test:  öppna http://localhost:8766 i webbläsaren på datorn
 """
-import json, os, socket, subprocess, sys, threading, time, datetime as dt
+import email.utils, json, os, re, socket, subprocess, sys, threading, time, datetime as dt
 import urllib.request, xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # Claude: Added truststore because Trafikverket's server sends an incomplete certificate chain that Python can't verify on its own; now it works like: Python uses Windows' certificate handling, same as the browser.
@@ -24,7 +24,10 @@ PRODUCT      = "Mälartåg"
 # Claude: Changed so that the name matches the Hub because catt scan found it as "Lilla rara" (192.168.0.38).
 # NEST_NAME    = "Nest Hub"          # exakt namn från:  catt scan
 NEST_NAME    = "Lilla rara"        # exakt namn från:  catt scan
-NEWS_FEED    = "https://www.svt.se/nyheter/rss.xml"   # byt till Omnis RSS-adress om du hittar en
+# Claude: Changed so that news mixes SVT national (4 on the main view) with SVT Uppsala (2) because local news covers Knivsta; now it works like: (address, label, on main view, in big view).
+# NEWS_FEED    = "https://www.svt.se/nyheter/rss.xml"   # byt till Omnis RSS-adress om du hittar en
+NEWS_FEEDS   = [("https://www.svt.se/nyheter/rss.xml", "SVT", 4, 5),
+                ("https://www.svt.se/nyheter/lokalt/uppsala/rss.xml", "Uppsala", 2, 3)]
 LAT, LON     = 59.726, 17.789      # Knivsta
 # Claude: Changed so that the port is 8766 because the Game Developer project's http.server already uses 8765; now it works like: no clash, localhost:8766 is always NestBoard.
 # PORT         = 8765
@@ -75,7 +78,8 @@ def iso(s):
 def trains():
     a, b = signature(FROM_STATION), signature(TO_STATION)
     fields = ["AdvertisedTrainIdent", "AdvertisedTimeAtLocation", "EstimatedTimeAtLocation",
-              "TimeAtLocation", "Canceled", "TrackAtLocation", "ProductInformation", "Deviation"]
+              "TimeAtLocation", "Canceled", "TrackAtLocation", "ProductInformation", "Deviation",
+              "OtherInformation"]   # Claude: Added OtherInformation for the big train view (e.g. ticket info).
     inc = "".join(f"<INCLUDE>{f}</INCLUDE>" for f in fields)
 
     def q(sig, activity, start, end):
@@ -87,7 +91,9 @@ def trains():
 
     # Avgångar från Knivsta + ankomster till Stockholm C; matchas på tågnummer
     # så att bara tåg som faktiskt går Knivsta -> Stockholm C visas.
-    res = trv(q(a, "Avgang", "-00:20:00", "02:00:00") + q(b, "Ankomst", "-00:20:00", "03:30:00"))
+    # Claude: Changed so that the query looks 3 h 40 min ahead instead of 2 h because the big view shows the whole morning (at 06:00 that reaches past 09:30).
+    # res = trv(q(a, "Avgang", "-00:20:00", "02:00:00") + q(b, "Ankomst", "-00:20:00", "03:30:00"))
+    res = trv(q(a, "Avgang", "-00:20:00", "03:40:00") + q(b, "Ankomst", "-00:20:00", "05:00:00"))
     deps = res[0].get("TrainAnnouncement", [])
     arrs = {t["AdvertisedTrainIdent"]: t for t in res[1].get("TrainAnnouncement", [])}
 
@@ -115,9 +121,13 @@ def trains():
             "product": ", ".join(p.get("Description", "") for p in t.get("ProductInformation", [])),
             "arrive": iso(x["AdvertisedTimeAtLocation"]).strftime("%H:%M"),
             "info": " · ".join(d.get("Description", "") for d in t.get("Deviation", [])),
+            # Claude: Added for the big view: expected arrival if late, and extra info from Trafikverket.
+            "arrive_new": iso(x["EstimatedTimeAtLocation"]).strftime("%H:%M") if x.get("EstimatedTimeAtLocation") else "",
+            "other": [o.get("Description", "") for o in t.get("OtherInformation", [])],
         })
-        if len(out) >= MAX_TRAINS:
-            break
+        # Claude: Changed so that all morning trains are returned because the big view shows them all; the main view still shows MAX_TRAINS.
+        # if len(out) >= MAX_TRAINS:
+        #     break
     return out
 
 
@@ -130,12 +140,42 @@ WMO = {0: ("☀️", "Klart"), 1: ("🌤️", "Mest klart"), 2: ("⛅", "Halvkla
        86: ("❄️", "Snöbyar"), 95: ("⛈️", "Åska"), 96: ("⛈️", "Åska"), 99: ("⛈️", "Åska")}
 
 
+# Claude: Added dress_advice so the big weather view says what to wear, based on feels-like temperature, rain, snow and wind during a time span (e.g. 07–09).
+SNOW = {71, 73, 75, 77, 85, 86}
+def dress_advice(feels, rain_pct, rain_mm, wind, codes):
+    t = min(feels)
+    if t <= -10:  base = "Vinterjacka, mössa, vantar och halsduk"
+    elif t <= 0:  base = "Vinterjacka, mössa och vantar"
+    elif t <= 7:  base = "Varm jacka, gärna mössa"
+    elif t <= 13: base = "Jacka eller tjock tröja"
+    elif t <= 18: base = "Tunn jacka eller kofta"
+    else:         base = "T-shirt räcker"
+    extra = []
+    if any(c in SNOW for c in codes):
+        extra.append("vinterskor")
+    elif max(rain_pct) >= 50 or sum(rain_mm) >= 0.5:
+        extra.append("paraply eller regnjacka")
+    if max(wind) >= 8:
+        extra.append("blåsigt – vindtätt")
+    if -2 <= t <= 2 and (sum(rain_mm) > 0 or any(c in SNOW for c in codes)):
+        extra.append("risk för halka")
+    return base + (" + " + ", ".join(extra) if extra else "")
+
+
 def weather():
+    # Claude: Changed so that more hourly fields and daily summaries are fetched because the big weather view shows today and tomorrow with dress advice.
+    # url = (f"https://api.open-meteo.com/v1/forecast?latitude={LAT}&longitude={LON}"
+    #        "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m"
+    #        "&hourly=temperature_2m,precipitation_probability,weather_code"
+    #        "&wind_speed_unit=ms&timezone=Europe%2FStockholm&forecast_days=2")
     url = (f"https://api.open-meteo.com/v1/forecast?latitude={LAT}&longitude={LON}"
            "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m"
-           "&hourly=temperature_2m,precipitation_probability,weather_code"
+           "&hourly=temperature_2m,precipitation_probability,weather_code,apparent_temperature,precipitation,wind_speed_10m"
+           "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,"
+           "precipitation_probability_max,wind_speed_10m_max,sunrise,sunset"
            "&wind_speed_unit=ms&timezone=Europe%2FStockholm&forecast_days=2")
     d = json.loads(http(url))
+    days = weather_days(d)
     c = d["current"]
     now = dt.datetime.now().replace(minute=0, second=0, microsecond=0)
     hours = []
@@ -144,13 +184,65 @@ def weather():
         if dt.datetime.fromisoformat(t) > now and len(hours) < 6:
             hours.append({"h": t[11:13], "temp": round(temp), "rain": pp, "icon": WMO.get(code, ("", ""))[0]})
     icon, text = WMO.get(c["weather_code"], ("", ""))
+    # Claude: Added "days" for the big weather view.
+    # return {"temp": round(c["temperature_2m"]), "feels": round(c["apparent_temperature"]),
+    #         "wind": round(c["wind_speed_10m"]), "icon": icon, "text": text, "hours": hours}
     return {"temp": round(c["temperature_2m"]), "feels": round(c["apparent_temperature"]),
-            "wind": round(c["wind_speed_10m"]), "icon": icon, "text": text, "hours": hours}
+            "wind": round(c["wind_speed_10m"]), "icon": icon, "text": text, "hours": hours, "days": days}
 
 
+# Claude: Added weather_days: one summary per day (today, tomorrow) with every-3rd-hour forecast and dress advice for the trip in (07–09) and home (16–18).
+def weather_days(d):
+    h, dl = d["hourly"], d["daily"]
+    out = []
+    for i, date in enumerate(dl["time"]):
+        idx = {int(t[11:13]): j for j, t in enumerate(h["time"]) if t.startswith(date)}
+        def span(a, b):
+            js = [idx[x] for x in range(a, b + 1) if x in idx]
+            return dress_advice([h["apparent_temperature"][j] for j in js],
+                                [h["precipitation_probability"][j] or 0 for j in js],
+                                [h["precipitation"][j] or 0 for j in js],
+                                [h["wind_speed_10m"][j] for j in js],
+                                [h["weather_code"][j] for j in js])
+        icon, text = WMO.get(dl["weather_code"][i], ("", ""))
+        out.append({
+            "name": "Idag" if i == 0 else "Imorgon",
+            "icon": icon, "text": text,
+            "max": round(dl["temperature_2m_max"][i]), "min": round(dl["temperature_2m_min"][i]),
+            "rain_mm": dl["precipitation_sum"][i], "rain_pct": dl["precipitation_probability_max"][i],
+            "wind": round(dl["wind_speed_10m_max"][i]),
+            "sunrise": dl["sunrise"][i][11:16], "sunset": dl["sunset"][i][11:16],
+            "dress_am": span(7, 9), "dress_pm": span(16, 18),
+            "hours": [{"h": f"{x:02d}", "temp": round(h["temperature_2m"][idx[x]]),
+                       "icon": WMO.get(h["weather_code"][idx[x]], ("", ""))[0],
+                       "rain": h["precipitation_probability"][idx[x]]} for x in range(6, 24, 3) if x in idx],
+        })
+    return out
+
+
+# Claude: Rewrote news() so that it reads several feeds and keeps the summary because the big news view shows it; now it works like: each item has title, summary, source, time and "top" (shown on the main view).
+# def news():
+#     root = ET.fromstring(http(NEWS_FEED))
+#     return [i.findtext("title", "").strip() for i in root.iter("item")][:6]
 def news():
-    root = ET.fromstring(http(NEWS_FEED))
-    return [i.findtext("title", "").strip() for i in root.iter("item")][:6]
+    out = []
+    for url, label, top, big in NEWS_FEEDS:
+        items = []
+        for i in ET.fromstring(http(url)).iter("item"):
+            title = i.findtext("title", "").strip()
+            if not title or title.startswith("Vet du mer"):
+                continue                  # SVT lokalt: uppmaningar att tipsa, inte nyheter
+            when = i.findtext("pubDate", "")
+            try:
+                when = email.utils.parsedate_to_datetime(when).astimezone().strftime("%H:%M")
+            except Exception:
+                when = ""
+            items.append({"title": title, "desc": re.sub(r"<[^>]+>", "", i.findtext("description", "")).strip(),
+                          "src": label, "time": when, "top": len(items) < top})
+            if len(items) >= big:
+                break
+        out += items
+    return out
 
 
 # Claude: Added day_info so that the header shows weekday, week number, name days, holidays and flag days, and so casting can skip days off (e.g. julafton); fetched once per day.
@@ -171,6 +263,21 @@ def day_info(day=None):
             "flag": d.get("flaggdag", ""),
             "day_off": d.get("arbetsfri dag") == "Ja",
         }
+        # Claude: Added for the big date view: name days for the next 7 days and the next 3 holidays (looks in this month and the next two).
+        try:
+            cal = []
+            for k in range(3):
+                y, m = divmod(day.month - 1 + k, 12)
+                r = http(f"https://sholiday.faboul.se/dagar/v2.1/{day.year + y}/{m + 1:02d}").decode("utf-8")
+                cal += json.loads(r[r.index("{"):])["dagar"]
+            future = [c for c in cal if c["datum"] > day.isoformat()]
+            def short(c):
+                x = dt.date.fromisoformat(c["datum"])
+                return f'{c["veckodag"][:3]} {x.day} {MONTHS[x.month - 1][:3]}'
+            _day[day]["week_names"] = [{"date": short(c), "names": ", ".join(c.get("namnsdag", []))} for c in future[:7]]
+            _day[day]["next_holidays"] = [{"date": short(c), "name": c["helgdag"]} for c in future if c.get("helgdag")][:3]
+        except Exception:
+            pass
     return _day[day]
 
 
@@ -203,8 +310,11 @@ header{display:flex;justify-content:space-between;align-items:baseline}
 .muted{color:#8b929b;font-size:15px}
 .card{background:#171b22;border-radius:14px;padding:14px 16px}
 h2{font-size:15px;color:#8b929b;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
+/* Claude: Changed padding 7px -> 4px and font 24px -> 22px because 5 trains pushed the news off the bottom of the 600px screen. */
+/* .train{display:grid;grid-template-columns:80px 70px 1fr 60px;align-items:center;gap:10px;
+padding:7px 0;border-bottom:1px solid #232833;font-size:24px} */
 .train{display:grid;grid-template-columns:80px 70px 1fr 60px;align-items:center;gap:10px;
-padding:7px 0;border-bottom:1px solid #232833;font-size:24px}
+padding:4px 0;border-bottom:1px solid #232833;font-size:22px}
 .train:last-child{border:0}
 .t{font-weight:700}.late{color:#f4b400}.cx{color:#ff5c5c}.cx .t{text-decoration:line-through}
 .sub{font-size:14px;color:#8b929b}.track{text-align:right;color:#8b929b;font-size:18px}
@@ -218,15 +328,44 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #news li:last-child{border:0}
 .err{color:#ff5c5c;font-size:14px}
 #day{font-size:18px;color:#c4c8ce}#day b{color:#e8eaed}.hol{color:#f4b400}
+/* Claude: Added styles for the big view (#detail) that opens when a part is tapped. */
+[data-v]{cursor:pointer}
+.src{display:inline-block;font-size:11px;font-weight:700;color:#0e1116;background:#8ab4f8;border-radius:4px;padding:1px 5px;margin-right:6px;vertical-align:2px}
+#detail{display:none;position:fixed;inset:0;background:#0e1116;padding:18px 22px;overflow:hidden;cursor:pointer}
+#detail .top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px}
+#detail h1{font-size:26px}
+.big .train{font-size:22px;padding:6px 0}
+.other{grid-column:1/-1;font-size:13px;color:#8b929b;margin-top:-4px}
+.wdays{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.wd h3{font-size:24px;margin-bottom:4px}.wd .bigt{font-size:56px;font-weight:700}
+.wd .row{color:#c4c8ce;font-size:17px;margin:6px 0 14px}
+.wd .hrs{display:flex;justify-content:space-between;font-size:20px;color:#c4c8ce;text-align:center;margin-bottom:16px;line-height:1.35}
+.dress{background:#232833;border-radius:10px;padding:12px 14px;font-size:19px;line-height:1.6}
+.ncols{display:grid;grid-template-columns:1fr 1fr;gap:6px 18px}
+.n{padding:5px 0;border-bottom:1px solid #232833}.n b{font-size:16px}
+.n p{font-size:13px;color:#a9afb7;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:2px}
+.dgrid{display:grid;grid-template-columns:1.2fr 1fr;gap:14px}
+.dl div{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #232833;font-size:18px}
+.dl span:first-child{color:#8b929b}
 </style></head><body>
 <!-- Claude: Added the #day line next to the clock for date, week, name days, holiday and flag day. -->
 <!-- <header><div id="clock">--:--</div><div class="muted" id="upd"></div></header> -->
+<!-- Claude: Added data-v on each part so a tap opens its big view, and the #detail container for that view. -->
+<!--
 <header><div style="display:flex;align-items:baseline;gap:16px"><div id="clock">--:--</div><div id="day"></div></div><div class="muted" id="upd"></div></header>
 <section class="card"><h2>Knivsta → Stockholm C</h2><div id="trains"></div></section>
 <section class="bottom">
  <div class="card"><h2>Väder Knivsta</h2><div id="weather"></div></div>
  <div class="card"><h2>Nyheter</h2><ul id="news"></ul></div>
 </section>
+-->
+<header><div style="display:flex;align-items:baseline;gap:16px" data-v="day"><div id="clock">--:--</div><div id="day"></div></div><div class="muted" id="upd"></div></header>
+<section class="card" data-v="trains"><h2>Knivsta → Stockholm C</h2><div id="trains"></div></section>
+<section class="bottom">
+ <div class="card" data-v="weather"><h2>Väder Knivsta</h2><div id="weather"></div></div>
+ <div class="card" data-v="news"><h2>Nyheter</h2><ul id="news"></ul></div>
+</section>
+<div id="detail"></div>
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -239,20 +378,68 @@ async function load(){
   const y=d.day;
   if(y){$("day").innerHTML=`<b>${esc(y.date)}</b> · v.${esc(y.week)}${y.names?" · 🎉 "+esc(y.names):""}`+
    (y.holiday?` · <span class="hol">${esc(y.holiday)}</span>`:"")+(y.flag&&y.flag!==y.holiday?` · 🇸🇪 ${esc(y.flag)}`:y.flag?" 🇸🇪":"");}
+  // Claude: Changed so that the main view shows the first 5 trains (the server now sends the whole morning) and the row is built by trow(), shared with the big view.
+  // $("trains").innerHTML=d.trains_error?`<div class="err">${esc(d.trains_error)}</div>`:
+  //  (d.trains.length?d.trains.map(t=>`<div class="train ${t.cancelled?"cx":t.delay>0?"late":""}">
+  //   <div class="t">${t.time}</div>
+  //   <div>${t.cancelled?"Inställt":t.new?t.new:""}</div>
+  //   <div class="sub">${esc(t.product)} · framme ${t.arrive}${t.delay>0&&!t.cancelled?" · +"+t.delay+" min":""}</div>
+  //   <div class="track">${t.track?"Spår "+esc(t.track):""}</div>
+  //   ${t.info?`<div class="info">${esc(t.info)}</div>`:""}</div>`).join(""):'<div class="muted">Inga avgångar närmaste timmarna</div>');
   $("trains").innerHTML=d.trains_error?`<div class="err">${esc(d.trains_error)}</div>`:
-   (d.trains.length?d.trains.map(t=>`<div class="train ${t.cancelled?"cx":t.delay>0?"late":""}">
-    <div class="t">${t.time}</div>
-    <div>${t.cancelled?"Inställt":t.new?t.new:""}</div>
-    <div class="sub">${esc(t.product)} · framme ${t.arrive}${t.delay>0&&!t.cancelled?" · +"+t.delay+" min":""}</div>
-    <div class="track">${t.track?"Spår "+esc(t.track):""}</div>
-    ${t.info?`<div class="info">${esc(t.info)}</div>`:""}</div>`).join(""):'<div class="muted">Inga avgångar närmaste timmarna</div>');
+   (d.trains.length?d.trains.slice(0,5).map(t=>trow(t,false)).join(""):'<div class="muted">Inga fler Mälartåg 06:00–09:30</div>');
   const w=d.weather;
   $("weather").innerHTML=d.weather_error?`<div class="err">${esc(d.weather_error)}</div>`:
    `<div id="now">${w.icon} ${w.temp}°</div><div class="muted">${w.text} · känns som ${w.feels}° · vind ${w.wind} m/s</div>
     <div id="hours">${w.hours.map(h=>`<div>${h.h}<br>${h.icon}<br>${h.temp}°<br><span class="sub">${h.rain}%</span></div>`).join("")}</div>`;
-  $("news").innerHTML=d.news_error?`<li class="err">${esc(d.news_error)}</li>`:d.news.map(n=>`<li>${esc(n)}</li>`).join("");
+  // Claude: Changed so that only "top" news is shown on the main view, with an Uppsala tag on local news.
+  // $("news").innerHTML=d.news_error?`<li class="err">${esc(d.news_error)}</li>`:d.news.map(n=>`<li>${esc(n)}</li>`).join("");
+  $("news").innerHTML=d.news_error?`<li class="err">${esc(d.news_error)}</li>`:
+   d.news.filter(n=>n.top).map(n=>`<li>${n.src!=="SVT"?`<span class="src">${esc(n.src)}</span>`:""}${esc(n.title)}</li>`).join("");
+  // Claude: Added so that an open big view is refreshed with the new data too.
+  D=d; if(V)$("detail").innerHTML=views[V]();
  }catch(e){$("upd").textContent="Kunde inte hämta data";}
 }
+
+// Claude: Added the big views. Tap a part to open it, tap anywhere to go back; it also goes back by itself after 90 s.
+let D=null,V=null,T=null;
+function trow(t,big){
+ return `<div class="train ${t.cancelled?"cx":t.delay>0?"late":""}">
+  <div class="t">${t.time}</div>
+  <div>${t.cancelled?"Inställt":t.new?t.new:""}</div>
+  <div class="sub">${esc(t.product)} · framme ${big&&t.arrive_new&&t.arrive_new!==t.arrive?`<s>${t.arrive}</s> ${t.arrive_new}`:t.arrive}${t.delay>0&&!t.cancelled?" · +"+t.delay+" min":""}</div>
+  <div class="track">${t.track?"Spår "+esc(t.track):""}</div>
+  ${t.info?`<div class="info">${esc(t.info)}</div>`:""}
+  ${big&&t.other&&t.other.length?`<div class="other">${t.other.map(esc).join(" · ")}</div>`:""}</div>`;
+}
+const ttl=(title)=>`<div class="top"><h1>${title}</h1><div class="muted">Tryck för att gå tillbaka</div></div>`;
+const views={
+ trains:()=>ttl("Mälartåg Knivsta → Stockholm C · 06:00–09:30")+(D.trains_error?`<div class="err">${esc(D.trains_error)}</div>`:
+  D.trains.length?`<div class="big">${D.trains.slice(0,8).map(t=>trow(t,true)).join("")}</div>`:'<div class="muted">Inga fler Mälartåg i morgonfönstret.</div>'),
+ weather:()=>ttl("Väder Knivsta")+(D.weather_error?`<div class="err">${esc(D.weather_error)}</div>`:
+  `<div class="wdays">${D.weather.days.map(w=>`<div class="card wd">
+   <h3>${w.name}</h3>
+   <div class="bigt">${w.icon} ${w.max}° <span class="muted" style="font-size:22px">/ ${w.min}°</span></div>
+   <div class="row">${esc(w.text)} · 💧 ${w.rain_mm} mm (${w.rain_pct}%) · 💨 ${w.wind} m/s · 🌅 ${w.sunrise}–${w.sunset}</div>
+   <div class="hrs">${w.hours.map(h=>`<div>${h.h}<br>${h.icon}<br>${h.temp}°<br><span class="sub">${h.rain}%</span></div>`).join("")}</div>
+   <div class="dress">🚶 <b>Till tåget</b> (07–09): ${esc(w.dress_am)}<br>🏠 <b>Hemvägen</b> (16–18): ${esc(w.dress_pm)}</div>
+  </div>`).join("")}</div>`),
+ news:()=>ttl("Nyheter")+(D.news_error?`<div class="err">${esc(D.news_error)}</div>`:
+  `<div class="ncols">${D.news.map(n=>`<div class="n"><span class="src">${esc(n.src)}</span><span class="muted">${n.time}</span><br><b>${esc(n.title)}</b><p>${esc(n.desc)}</p></div>`).join("")}</div>`),
+ day:()=>{const y=D.day||{};return ttl(`${esc(y.date||"")} · vecka ${esc(y.week||"")}`)+
+  `<div class="dgrid"><div class="card"><h2>Namnsdagar</h2><div class="dl">
+    <div><span>Idag</span><b>${esc(y.names||"–")}</b></div>
+    ${(y.week_names||[]).map(x=>`<div><span>${esc(x.date)}</span><span>${esc(x.names||"–")}</span></div>`).join("")}</div></div>
+   <div class="card"><h2>Kommande helgdagar</h2><div class="dl">
+    ${(y.next_holidays||[]).map(x=>`<div><span>${esc(x.date)}</span><span>${esc(x.name)}</span></div>`).join("")}</div>
+    ${y.holiday?`<p class="hol" style="margin-top:12px;font-size:18px">Idag: ${esc(y.holiday)}</p>`:""}
+    ${y.flag?`<p style="margin-top:8px;font-size:16px">🇸🇪 Flaggdag: ${esc(y.flag)}</p>`:""}</div></div>`;}
+};
+function showView(v){if(!D)return;V=v;$("detail").innerHTML=views[v]();$("detail").style.display="block";clearTimeout(T);T=setTimeout(hideView,90000);}
+function hideView(){V=null;$("detail").style.display="none";clearTimeout(T);}
+document.querySelectorAll("[data-v]").forEach(e=>e.addEventListener("click",()=>showView(e.dataset.v)));
+$("detail").addEventListener("click",hideView);
+
 clock();load();setInterval(clock,1000);setInterval(load,60000);
 </script></body></html>"""
 
