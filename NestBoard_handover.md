@@ -49,7 +49,10 @@ Robin needs a free key from Trafikverket's own registration ("Trafikverkets öpp
 ## Update 2026-10-26 (first run done)
 - Runs at logon via Task Scheduler task **"NestBoard"** (`pythonw.exe morgonskarm.py`, no time limit, restarts on crash).
 - Key in user env var `TRV_KEY`. Port is **8766** (8765 is used by the Game Developer project). Hub is named **"Lilla rara"** (192.168.0.38).
-- Cast window and train filter: weekdays **06:00–09:30**, Mälartåg only.
+- ~~Cast window and train filter: weekdays 06:00–09:30~~ → now: **cast weekdays 06–23, weekends/holidays 07–24**. Trains (Mälartåg only) are shown only **06:00–09:30 on workdays**; otherwise the train card is hidden and news/weather get bigger. Screen dims from 21:00.
+- Per-source refresh: trains 50 s (only inside train window), news 5 min, weather 15 min.
+- Tap any part (trains, weather, news, date line) for a big view; tap again or wait 90 s to go back. **Touch on the cast Hub is not yet confirmed working.**
+- News: SVT national + SVT Uppsala. Header: date, week, name days, holiday/flag day (sholiday.faboul.se).
 - Fixed: `TrainStation` schema 1.4, `truststore` for Trafikverket SSL, catt run via `python -m catt.cli`.
 
 ## Unverified / likely first-run issues

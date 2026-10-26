@@ -32,13 +32,18 @@ LAT, LON     = 59.726, 17.789      # Knivsta
 # Claude: Changed so that the port is 8766 because the Game Developer project's http.server already uses 8765; now it works like: no clash, localhost:8766 is always NestBoard.
 # PORT         = 8765
 PORT         = 8766
-CAST_DAYS    = {0, 1, 2, 3, 4}     # mån–fre
-# Claude: Changed so that the window is 06:00–09:30 because trains after 09:30 aren't needed; now it works like: times instead of whole hours, used both for casting and for which trains are shown.
+# Claude: Changed so that the screen is cast all day (weekdays 06–23, weekends and holidays 07–24) while trains are still only shown 06:00–09:30 on workdays; now it works like: separate cast window and train window.
+# CAST_DAYS    = {0, 1, 2, 3, 4}     # mån–fre
 # CAST_FROM, CAST_TO = 6, 9          # visa på Nest Hub 06:00–09:00
-CAST_FROM, CAST_TO = dt.time(6, 0), dt.time(9, 30)   # visa på Nest Hub 06:00–09:30
+# CAST_FROM, CAST_TO = dt.time(6, 0), dt.time(9, 30)   # visa på Nest Hub 06:00–09:30
+# SKIP_DAYS_OFF = True
+CAST_WORKDAY = (dt.time(6, 0), dt.time(23, 0))   # mån–fre: visa på Nest Hub 06–23
+CAST_DAY_OFF = (dt.time(7, 0), dt.time.max)      # helg och helgdagar (julafton m.m.): 07–24
+TRAIN_FROM, TRAIN_TO = dt.time(6, 0), dt.time(9, 30)   # tåg visas bara då, och bara på arbetsdagar
+DIM_FROM     = 21                  # skärmen dimmas från kl 21
+# Claude: Added so that each source is fetched only as often as it changes (seconds).
+REFRESH      = {"trains": 50, "news": 300, "weather": 900, "day": 50}
 RECAST_MIN   = 15                  # casta om var 15:e min ifall den tappat sidan
-# Claude: Added so that casting is skipped on weekday days off (helgdagar, julafton etc.). Set False to cast anyway.
-SKIP_DAYS_OFF = True
 MAX_TRAINS   = 5
 # =========================================================
 
@@ -109,7 +114,9 @@ def trains():
             continue                      # har redan gått
         adv, est = iso(t["AdvertisedTimeAtLocation"]), iso(t.get("EstimatedTimeAtLocation"))
         # Claude: Added so that only trains departing 06:00–09:30 are shown because later trains aren't needed.
-        if not CAST_FROM <= adv.time() <= CAST_TO:
+        # Claude: Changed to TRAIN_FROM/TRAIN_TO since the cast window is now separate.
+        # if not CAST_FROM <= adv.time() <= CAST_TO:
+        if not TRAIN_FROM <= adv.time() <= TRAIN_TO:
             continue
         delay = int((est - adv).total_seconds() // 60) if est else 0
         out.append({
@@ -281,21 +288,58 @@ def day_info(day=None):
     return _day[day]
 
 
-_cache = {"t": 0, "data": None}
+# Claude: Added is_workday/train_window: weekday and not a holiday (if the calendar service is down, Mon–Fri counts as workdays).
+def is_workday(day=None):
+    day = day or dt.date.today()
+    if day.weekday() >= 5:
+        return False
+    try:
+        return not day_info(day)["day_off"]
+    except Exception:
+        return True
+
+
+def train_window(now=None):
+    now = now or dt.datetime.now()
+    return is_workday(now.date()) and TRAIN_FROM <= now.time() <= TRAIN_TO
+
+
+# Claude: Rewrote the cache so that each source has its own refresh time (REFRESH) because the screen now shows all day; now it works like: trains ~every minute, news every 5 min, weather every 15 min, and Trafikverket isn't called at all outside the train window.
+# _cache = {"t": 0, "data": None}
+# _lock = threading.Lock()
+# def get_data():
+#     with _lock:
+#         if time.time() - _cache["t"] < 50 and _cache["data"]:
+#             return _cache["data"]
+#         data = {"updated": dt.datetime.now().strftime("%H:%M")}
+#         for key, fn in (("trains", trains), ("weather", weather), ("news", news), ("day", day_info)):
+#             try:
+#                 data[key] = fn()
+#             except Exception as e:
+#                 data[key + "_error"] = str(e)
+#         _cache.update(t=time.time(), data=data)
+#         return data
+_cache = {}                       # key -> (tid, värde eller None, fel eller None)
 _lock = threading.Lock()
 def get_data():
     with _lock:
-        if time.time() - _cache["t"] < 50 and _cache["data"]:
-            return _cache["data"]
-        data = {"updated": dt.datetime.now().strftime("%H:%M")}
-        # Claude: Added ("day", day_info) so the page gets name days etc.
-        # for key, fn in (("trains", trains), ("weather", weather), ("news", news)):
+        tw = train_window()
+        data = {"updated": dt.datetime.now().strftime("%H:%M"), "train_window": tw}
         for key, fn in (("trains", trains), ("weather", weather), ("news", news), ("day", day_info)):
-            try:
-                data[key] = fn()
-            except Exception as e:
-                data[key + "_error"] = str(e)
-        _cache.update(t=time.time(), data=data)
+            if key == "trains" and not tw:
+                data["trains"] = []
+                continue
+            t, val, err = _cache.get(key, (0, None, None))
+            if time.time() - t >= REFRESH[key]:
+                try:
+                    val, err = fn(), None
+                except Exception as e:
+                    err = str(e)          # behåll senaste lyckade värdet om det finns
+                _cache[key] = (time.time(), val, err)
+            if val is not None:
+                data[key] = val
+            elif err:
+                data[key + "_error"] = err
         return data
 
 
@@ -330,6 +374,19 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #day{font-size:18px;color:#c4c8ce}#day b{color:#e8eaed}.hol{color:#f4b400}
 /* Claude: Added styles for the big view (#detail) that opens when a part is tapped. */
 [data-v]{cursor:pointer}
+/* Claude: Added .notrains (train card hidden outside 06:00–09:30 on workdays, weather and news take the space) and .dim (darker screen from 21:00). */
+body.notrains{grid-template-rows:auto 1fr}
+.notrains section[data-v=trains]{display:none}
+/* Claude: Changed so that news is easier to read when the trains are hidden: bigger text, wraps to max 2 lines instead of "…", and a wider news column. */
+/* .notrains #news li{font-size:19px;padding:7px 0} */
+.notrains #news li{font-size:21px;line-height:1.3;padding:8px 0;white-space:normal;
+display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.notrains #news{overflow:hidden;max-height:440px}
+.bottom>div{min-width:0}
+/* .notrains .bottom{grid-template-columns:1fr 1.25fr} */
+.notrains .bottom{grid-template-columns:1fr 1.6fr}.notrains #now{font-size:56px}.notrains #hours{font-size:18px;gap:20px}
+.wtom{margin-top:14px;font-size:16px;color:#c4c8ce;line-height:1.6;border-top:1px solid #232833;padding-top:10px}
+body.dim{filter:brightness(.45)}
 .src{display:inline-block;font-size:11px;font-weight:700;color:#0e1116;background:#8ab4f8;border-radius:4px;padding:1px 5px;margin-right:6px;vertical-align:2px}
 #detail{display:none;position:fixed;inset:0;background:#0e1116;padding:18px 22px;overflow:hidden;cursor:pointer}
 #detail .top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px}
@@ -368,8 +425,11 @@ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 <div id="detail"></div>
 <script>
 const $=id=>document.getElementById(id);
+const DIM_FROM=__DIM_FROM__;   // Claude: Added; filled in from DIM_FROM in the Python settings when the page is served.
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-function clock(){const d=new Date();$("clock").textContent=d.toLocaleTimeString("sv-SE",{hour:"2-digit",minute:"2-digit"});}
+function clock(){const d=new Date();$("clock").textContent=d.toLocaleTimeString("sv-SE",{hour:"2-digit",minute:"2-digit"});
+ // Claude: Added so the screen dims in the evening and night.
+ document.body.classList.toggle("dim",d.getHours()>=DIM_FROM||d.getHours()<6);}
 async function load(){
  try{
   const d=await (await fetch("/data")).json();
@@ -394,8 +454,16 @@ async function load(){
     <div id="hours">${w.hours.map(h=>`<div>${h.h}<br>${h.icon}<br>${h.temp}°<br><span class="sub">${h.rain}%</span></div>`).join("")}</div>`;
   // Claude: Changed so that only "top" news is shown on the main view, with an Uppsala tag on local news.
   // $("news").innerHTML=d.news_error?`<li class="err">${esc(d.news_error)}</li>`:d.news.map(n=>`<li>${esc(n)}</li>`).join("");
+  // Claude: Added so that outside the train window the train card is hidden, all news are shown and the weather card also shows the day ahead.
+  document.body.classList.toggle("notrains",!d.train_window);
+  const wd=d.weather&&d.weather.days;
+  if(!d.train_window&&wd&&!d.weather_error){
+   const x=new Date().getHours()>=16?wd[1]:wd[0];
+   if(x)$("weather").innerHTML+=`<div class="wtom"><b>${x.name}</b> ${x.icon} ${x.max}° / ${x.min}° · 💧 ${x.rain_pct}%<br>`+
+    `🚶 ${esc(x.name==="Idag"?x.dress_pm:x.dress_am)}</div>`;
+  }
   $("news").innerHTML=d.news_error?`<li class="err">${esc(d.news_error)}</li>`:
-   d.news.filter(n=>n.top).map(n=>`<li>${n.src!=="SVT"?`<span class="src">${esc(n.src)}</span>`:""}${esc(n.title)}</li>`).join("");
+   d.news.filter(n=>n.top||!d.train_window).map(n=>`<li>${n.src!=="SVT"?`<span class="src">${esc(n.src)}</span>`:""}${esc(n.title)}</li>`).join("");
   // Claude: Added so that an open big view is refreshed with the new data too.
   D=d; if(V)$("detail").innerHTML=views[V]();
  }catch(e){$("upd").textContent="Kunde inte hämta data";}
@@ -449,7 +517,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/data"):
             body, ctype = json.dumps(get_data()).encode(), "application/json"
         else:
-            body, ctype = PAGE.encode(), "text/html; charset=utf-8"
+            # Claude: Changed so that DIM_FROM is filled into the page.
+            # body, ctype = PAGE.encode(), "text/html; charset=utf-8"
+            body, ctype = PAGE.replace("__DIM_FROM__", str(DIM_FROM)).encode(), "text/html; charset=utf-8"
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store")
@@ -475,13 +545,16 @@ def cast_loop(url):
         now = dt.datetime.now()
         # Claude: Changed so that minutes count too (09:30, not just 09).
         # in_window = now.weekday() in CAST_DAYS and CAST_FROM <= now.hour < CAST_TO
-        in_window = now.weekday() in CAST_DAYS and CAST_FROM <= now.time() < CAST_TO
+        # in_window = now.weekday() in CAST_DAYS and CAST_FROM <= now.time() < CAST_TO
         # Claude: Added so that weekday days off (e.g. julafton, nyårsafton) skip casting; if the calendar service is down it casts as usual.
-        if in_window and SKIP_DAYS_OFF:
-            try:
-                in_window = not day_info()["day_off"]
-            except Exception:
-                pass
+        # if in_window and SKIP_DAYS_OFF:
+        #     try:
+        #         in_window = not day_info()["day_off"]
+        #     except Exception:
+        #         pass
+        # Claude: Changed so that workdays cast 06–23 and weekends/holidays 07–24 (holidays now use the weekend schedule instead of being skipped).
+        start, end = CAST_WORKDAY if is_workday(now.date()) else CAST_DAY_OFF
+        in_window = start <= now.time() <= end
         try:
             if in_window and (not casting or time.time() - last > RECAST_MIN * 60):
                 # Claude: Changed so that catt is run via Python because catt.exe isn't on PATH; now it works like: the same Python that runs this script starts catt.
