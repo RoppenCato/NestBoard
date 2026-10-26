@@ -254,8 +254,10 @@ def news():
                 when = email.utils.parsedate_to_datetime(when).astimezone().strftime("%H:%M")
             except Exception:
                 when = ""
+            # Claude: Added "link" so the story view can show a QR code to the full article.
             items.append({"title": title, "desc": re.sub(r"<[^>]+>", "", i.findtext("description", "")).strip(),
-                          "src": label, "time": when, "top": len(items) < top})
+                          "src": label, "time": when, "top": len(items) < top,
+                          "link": i.findtext("link", "").strip()})
             if len(items) >= big:
                 break
         out += items
@@ -404,6 +406,16 @@ body.dim{filter:brightness(.45)}
 #detail{display:none;position:fixed;inset:0;background:#0e1116;padding:18px 22px;overflow:hidden;cursor:pointer}
 #detail .top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px}
 #detail h1{font-size:26px}
+/* Claude: Added the big back button at the bottom of every big view, and styles for tappable news and the single story view. */
+#detail{padding-bottom:86px}
+.back{position:absolute;left:22px;right:22px;bottom:14px;height:60px;border-radius:14px;background:#232833;
+display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:700;color:#e8eaed}
+.n{cursor:pointer;border-radius:8px;min-width:0}
+.art{display:grid;grid-template-columns:1fr auto;gap:28px;align-items:start}
+.art h1{font-size:34px!important;line-height:1.25;margin:8px 0 16px}
+.art .txt{font-size:24px;line-height:1.5;color:#d6d9de}
+.qr{background:#fff;padding:10px;border-radius:10px}
+.qrt{font-size:14px;color:#8b929b;text-align:center;margin-top:6px}
 .big .train{font-size:22px;padding:6px 0}
 .other{grid-column:1/-1;font-size:13px;color:#8b929b;margin-top:-4px}
 .wdays{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -412,12 +424,18 @@ body.dim{filter:brightness(.45)}
 .wd .hrs{display:flex;justify-content:space-between;font-size:20px;color:#c4c8ce;text-align:center;margin-bottom:16px;line-height:1.35}
 .dress{background:#232833;border-radius:10px;padding:12px 14px;font-size:19px;line-height:1.6}
 .ncols{display:grid;grid-template-columns:1fr 1fr;gap:6px 18px}
-.n{padding:5px 0;border-bottom:1px solid #232833}.n b{font-size:16px}
-.n p{font-size:13px;color:#a9afb7;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:2px}
+/* Claude: Changed so that headlines in the news list are bigger (16px -> 20px) and the summary is one line, since tapping a story now opens it big. */
+/* .n{padding:5px 0;border-bottom:1px solid #232833}.n b{font-size:16px}
+.n p{font-size:13px;color:#a9afb7;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:2px} */
+.n{padding:6px 0;border-bottom:1px solid #232833}.n b{font-size:20px;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.n p{font-size:15px;color:#a9afb7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
 .dgrid{display:grid;grid-template-columns:1.2fr 1fr;gap:14px}
 .dl div{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #232833;font-size:18px}
 .dl span:first-child{color:#8b929b}
-</style></head><body>
+</style>
+<!-- Claude: Added a small QR code library for the story view (scan to read the whole article on the phone). If it can't load, the story is shown without QR. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head><body>
 <!-- Claude: Added the #day line next to the clock for date, week, name days, holiday and flag day. -->
 <!-- <header><div id="clock">--:--</div><div class="muted" id="upd"></div></header> -->
 <!-- Claude: Added data-v on each part so a tap opens its big view, and the #detail container for that view. -->
@@ -486,7 +504,9 @@ async function load(){
   $("news").innerHTML=d.news_error?`<li class="err">${esc(d.news_error)}</li>`:
    d.news.filter(n=>n.top||!d.train_window).map(n=>`<li>${n.src!=="SVT"?`<span class="src">${esc(n.src)}</span>`:""}${esc(n.title)}</li>`).join("");
   // Claude: Added so that an open big view is refreshed with the new data too.
-  D=d; if(V)$("detail").innerHTML=views[V]();
+  // Claude: Changed to render() so that the back button and QR code are kept when the data refreshes.
+  // D=d; if(V)$("detail").innerHTML=views[V]();
+  D=d; if(V)render();
  // Claude: Changed so that the error is also sent to the PC's log (nestboard.log), to see what goes wrong on the Hub.
  // }catch(e){$("upd").textContent="Kunde inte hämta data";}
  }catch(e){$("upd").textContent="Kunde inte hämta data";report("load: "+e+" "+(e&&e.stack||""));}
@@ -503,7 +523,9 @@ function trow(t,big){
   ${t.info?`<div class="info">${esc(t.info)}</div>`:""}
   ${big&&t.other&&t.other.length?`<div class="other">${t.other.map(esc).join(" · ")}</div>`:""}</div>`;
 }
-const ttl=(title)=>`<div class="top"><h1>${title}</h1><div class="muted">Tryck för att gå tillbaka</div></div>`;
+// Claude: Changed the hint text since there is now a big back button at the bottom.
+// const ttl=(title)=>`<div class="top"><h1>${title}</h1><div class="muted">Tryck för att gå tillbaka</div></div>`;
+const ttl=(title)=>`<div class="top"><h1>${title}</h1></div>`;
 const views={
  trains:()=>ttl("Mälartåg Knivsta → Stockholm C · 06:00–09:30")+(D.trains_error?`<div class="err">${esc(D.trains_error)}</div>`:
   D.trains.length?`<div class="big">${D.trains.slice(0,8).map(t=>trow(t,true)).join("")}</div>`:'<div class="muted">Inga fler Mälartåg i morgonfönstret.</div>'),
@@ -515,8 +537,15 @@ const views={
    <div class="hrs">${w.hours.map(h=>`<div>${h.h}<br>${h.icon}<br>${h.temp}°<br><span class="sub">${h.rain}%</span></div>`).join("")}</div>
    <div class="dress">🚶 <b>Till tåget</b> (07–09): ${esc(w.dress_am)}<br>🏠 <b>Hemvägen</b> (16–18): ${esc(w.dress_pm)}</div>
   </div>`).join("")}</div>`),
- news:()=>ttl("Nyheter")+(D.news_error?`<div class="err">${esc(D.news_error)}</div>`:
-  `<div class="ncols">${D.news.map(n=>`<div class="n"><span class="src">${esc(n.src)}</span><span class="muted">${n.time}</span><br><b>${esc(n.title)}</b><p>${esc(n.desc)}</p></div>`).join("")}</div>`),
+ // Claude: Changed so that each story has data-n (its number) and can be tapped to open it big.
+ // news:()=>ttl("Nyheter")+(D.news_error?`<div class="err">${esc(D.news_error)}</div>`:
+ //  `<div class="ncols">${D.news.map(n=>`<div class="n"><span class="src">${esc(n.src)}</span><span class="muted">${n.time}</span><br><b>${esc(n.title)}</b><p>${esc(n.desc)}</p></div>`).join("")}</div>`),
+ news:()=>ttl("Nyheter <span class='muted'>· tryck på en nyhet för att läsa</span>")+(D.news_error?`<div class="err">${esc(D.news_error)}</div>`:
+  `<div class="ncols">${D.news.map((n,i)=>`<div class="n" data-n="${i}"><span class="src">${esc(n.src)}</span><span class="muted">${n.time}</span><b>${esc(n.title)}</b><p>${esc(n.desc)}</p></div>`).join("")}</div>`),
+ // Claude: Added the single story view: big headline and summary, and a QR code to read the whole article on the phone.
+ article:()=>{const n=A||{};return `<div class="art"><div><span class="src">${esc(n.src)}</span><span class="muted">${esc(n.time)}</span>
+  <h1>${esc(n.title)}</h1><div class="txt">${esc(n.desc)}</div></div>
+  ${n.link?`<div><div class="qr" id="qr"></div><div class="qrt">Läs hela på mobilen</div></div>`:""}</div>`;},
  day:()=>{const y=D.day||{};return ttl(`${esc(y.date||"")} · vecka ${esc(y.week||"")}`)+
   `<div class="dgrid"><div class="card"><h2>Namnsdagar</h2><div class="dl">
     <div><span>Idag</span><b>${esc(y.names||"–")}</b></div>
@@ -526,10 +555,26 @@ const views={
     ${y.holiday?`<p class="hol" style="margin-top:12px;font-size:18px">Idag: ${esc(y.holiday)}</p>`:""}
     ${y.flag?`<p style="margin-top:8px;font-size:16px">🇸🇪 Flaggdag: ${esc(y.flag)}</p>`:""}</div></div>`;}
 };
-function showView(v){if(!D)return;V=v;$("detail").innerHTML=views[v]();$("detail").style.display="block";clearTimeout(T);T=setTimeout(hideView,90000);}
-function hideView(){V=null;$("detail").style.display="none";clearTimeout(T);}
+// Claude: Rewrote navigation so that news -> story -> back works: tap a story in the list to open it; the back button (or tapping anywhere) goes one step back (story -> list -> main view); 90 s without touch goes back to the main view.
+// function showView(v){if(!D)return;V=v;$("detail").innerHTML=views[v]();$("detail").style.display="block";clearTimeout(T);T=setTimeout(hideView,90000);}
+// function hideView(){V=null;$("detail").style.display="none";clearTimeout(T);}
+// document.querySelectorAll("[data-v]").forEach(e=>e.addEventListener("click",()=>showView(e.dataset.v)));
+// $("detail").addEventListener("click",hideView);
+let A=null;   // vald nyhet i storyvyn
+function render(){
+ $("detail").innerHTML=views[V]()+`<div class="back">‹ Tillbaka</div>`;
+ const q=$("qr");
+ if(q&&A&&A.link&&window.QRCode){try{new QRCode(q,{text:A.link,width:170,height:170});}catch(e){}}
+}
+function showView(v){if(!D)return;V=v;render();$("detail").style.display="block";clearTimeout(T);T=setTimeout(hideView,90000);}
+function hideView(){V=null;A=null;$("detail").style.display="none";clearTimeout(T);}
 document.querySelectorAll("[data-v]").forEach(e=>e.addEventListener("click",()=>showView(e.dataset.v)));
-$("detail").addEventListener("click",hideView);
+$("detail").addEventListener("click",e=>{
+ const n=e.target.closest("[data-n]");
+ if(V==="news"&&n){A=D.news[+n.dataset.n];showView("article");}
+ else if(V==="article")showView("news");
+ else hideView();
+});
 
 clock();load();setInterval(clock,1000);setInterval(load,60000);
 </script></body></html>"""
