@@ -1,13 +1,17 @@
 """
 Morgonskärm för Nest Hub: tåg Knivsta -> Stockholm C, väder och nyheter.
 
-Krav:  Python 3.11+  och  pip install catt
+Krav:  Python 3.11+  och  pip install catt truststore
+       Trafikverket-nyckeln i miljövariabeln TRV_KEY (setx TRV_KEY "...")
 Kör:   python morgonskarm.py
 Test:  öppna http://localhost:8765 i webbläsaren på datorn
 """
-import json, os, socket, subprocess, threading, time, datetime as dt
+import json, os, socket, subprocess, sys, threading, time, datetime as dt
 import urllib.request, xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+# Claude: Added truststore because Trafikverket's server sends an incomplete certificate chain that Python can't verify on its own; now it works like: Python uses Windows' certificate handling, same as the browser.
+import truststore
+truststore.inject_into_ssl()
 
 # ===================== INSTÄLLNINGAR =====================
 # Claude: Changed so that the key is read from the TRV_KEY environment variable because the repo is public on GitHub; now it works like: set TRV_KEY once in Windows and the key never lands in git.
@@ -15,7 +19,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 TRV_KEY      = os.environ.get("TRV_KEY", "KLISTRA_IN_DIN_TRAFIKVERKET_NYCKEL")
 FROM_STATION = "Knivsta"
 TO_STATION   = "Stockholm C"
-NEST_NAME    = "Nest Hub"          # exakt namn från:  catt scan
+# Claude: Changed so that the name matches the Hub because catt scan found it as "Lilla rara" (192.168.0.38).
+# NEST_NAME    = "Nest Hub"          # exakt namn från:  catt scan
+NEST_NAME    = "Lilla rara"        # exakt namn från:  catt scan
 NEWS_FEED    = "https://www.svt.se/nyheter/rss.xml"   # byt till Omnis RSS-adress om du hittar en
 LAT, LON     = 59.726, 17.789      # Knivsta
 PORT         = 8765
@@ -45,7 +51,9 @@ _sig = {}
 def signature(name):
     """Slår upp stationens signatur (t.ex. Knivsta -> Kn) så den inte behöver hårdkodas."""
     if name not in _sig:
-        q = ('<QUERY objecttype="TrainStation" schemaversion="1.5">'
+        # Claude: Changed so that schemaversion is 1.4 because 1.5 rejects LocationSignature ("Invalid query attribute"); now it works like: Knivsta -> Kn.
+        # q = ('<QUERY objecttype="TrainStation" schemaversion="1.5">'
+        q = ('<QUERY objecttype="TrainStation" schemaversion="1.4">'
              f'<FILTER><EQ name="AdvertisedLocationName" value="{name}"/></FILTER>'
              '<INCLUDE>LocationSignature</INCLUDE></QUERY>')
         _sig[name] = trv(q)[0]["TrainStation"][0]["LocationSignature"]
@@ -237,11 +245,15 @@ def cast_loop(url):
         in_window = now.weekday() in CAST_DAYS and CAST_FROM <= now.hour < CAST_TO
         try:
             if in_window and (not casting or time.time() - last > RECAST_MIN * 60):
-                subprocess.run(["catt", "-d", NEST_NAME, "cast_site", url], timeout=60)
+                # Claude: Changed so that catt is run via Python because catt.exe isn't on PATH; now it works like: the same Python that runs this script starts catt.
+                # subprocess.run(["catt", "-d", NEST_NAME, "cast_site", url], timeout=60)
+                subprocess.run([sys.executable, "-m", "catt.cli", "-d", NEST_NAME, "cast_site", url], timeout=60)
                 casting, last = True, time.time()
                 print(f"{now:%H:%M} castar till {NEST_NAME}")
             elif not in_window and casting:
-                subprocess.run(["catt", "-d", NEST_NAME, "stop"], timeout=60)
+                # Claude: Changed the same way as cast_site above (catt via Python).
+                # subprocess.run(["catt", "-d", NEST_NAME, "stop"], timeout=60)
+                subprocess.run([sys.executable, "-m", "catt.cli", "-d", NEST_NAME, "stop"], timeout=60)
                 casting = False
                 print(f"{now:%H:%M} slutade casta")
         except Exception as e:
