@@ -67,7 +67,7 @@ Robin needs a free key from Trafikverket's own registration ("Trafikverkets öpp
 1. **Get v0 running**. Fix first-run errors, then tune the layout on the real Hub.
 2. Show something useful outside 06–09: clock, photo frame, or an evening view such as tomorrow's weather and the electricity price.
 3. **Electricity price** (Swedish hourly spot price, Knivsta is in area SE3) on the screen and possibly as a Hue colour.
-4. Move hosting off the gaming PC to a Raspberry Pi or another always-on box.
+4. ~~Move hosting off the gaming PC~~: dropped. NestBoard stays on the home PC (no Raspberry Pi).
 5. **Home Assistant** as the hub:
    - Cast its dashboard to the Hub.
    - Apple TV app launching (e.g. Netflix) exposed to Google voice.
