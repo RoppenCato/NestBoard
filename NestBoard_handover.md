@@ -4,7 +4,7 @@
 Turn Robin's Google Nest Hub (the one with a screen) into a simple, useful home info screen that isn't tied to Google's own clutter.
 
 The first version is a **weekday morning screen** showing three things:
-1. **Trains Knivsta → Stockholm C**: next departures with delays, cancellations, track and deviation info. Robin commutes by Mälartåg, but SL pendeltåg on the same route is shown too.
+1. **Trains Knivsta → Stockholm C**: next departures with delays, cancellations, track and deviation info. Robin commutes by Mälartåg, and **only Mälartåg is shown** (SL pendeltåg is filtered out; setting `PRODUCT`).
 2. **Weather in Knivsta**: current conditions plus the next 6 hours.
 3. **News headlines**: Omni wanted; SVT used for now.
 

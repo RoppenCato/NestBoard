@@ -19,8 +19,8 @@ truststore.inject_into_ssl()
 TRV_KEY      = os.environ.get("TRV_KEY", "KLISTRA_IN_DIN_TRAFIKVERKET_NYCKEL")
 FROM_STATION = "Knivsta"
 TO_STATION   = "Stockholm C"
-# Claude: Added because SL pendeltåg ends at Stockholm City instead of Stockholm C.
-TO_STATION_ALT = "Stockholm City"
+# Claude: Added so that only this train product is shown.
+PRODUCT      = "Mälartåg"
 # Claude: Changed so that the name matches the Hub because catt scan found it as "Lilla rara" (192.168.0.38).
 # NEST_NAME    = "Nest Hub"          # exakt namn från:  catt scan
 NEST_NAME    = "Lilla rara"        # exakt namn från:  catt scan
@@ -83,19 +83,15 @@ def trains():
 
     # Avgångar från Knivsta + ankomster till Stockholm C; matchas på tågnummer
     # så att bara tåg som faktiskt går Knivsta -> Stockholm C visas.
-    # Claude: Changed so that arrivals at Stockholm City are also fetched because SL pendeltåg stops there, not at Stockholm C; now it works like: a train counts if it reaches Stockholm C or Stockholm City.
-    # res = trv(q(a, "Avgang", "-00:20:00", "02:00:00") + q(b, "Ankomst", "-00:20:00", "03:30:00"))
-    # deps = res[0].get("TrainAnnouncement", [])
-    # arrs = {t["AdvertisedTrainIdent"]: t for t in res[1].get("TrainAnnouncement", [])}
-    c = signature(TO_STATION_ALT)
-    res = trv(q(a, "Avgang", "-00:20:00", "02:00:00") + q(b, "Ankomst", "-00:20:00", "03:30:00")
-              + q(c, "Ankomst", "-00:20:00", "03:30:00"))
+    res = trv(q(a, "Avgang", "-00:20:00", "02:00:00") + q(b, "Ankomst", "-00:20:00", "03:30:00"))
     deps = res[0].get("TrainAnnouncement", [])
-    arrs = {t["AdvertisedTrainIdent"]: t for t in res[2].get("TrainAnnouncement", [])}
-    arrs.update({t["AdvertisedTrainIdent"]: t for t in res[1].get("TrainAnnouncement", [])})
+    arrs = {t["AdvertisedTrainIdent"]: t for t in res[1].get("TrainAnnouncement", [])}
 
     out = []
     for t in deps:
+        # Claude: Added so that only Mälartåg is shown because Robin only takes Mälartåg; now it works like: any other product (e.g. SL Pendeltåg) is skipped.
+        if not any(p.get("Description") == PRODUCT for p in t.get("ProductInformation", [])):
+            continue
         x = arrs.get(t["AdvertisedTrainIdent"])
         if not x or x["AdvertisedTimeAtLocation"] <= t["AdvertisedTimeAtLocation"]:
             continue                      # går inte mot Stockholm C
