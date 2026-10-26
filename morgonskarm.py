@@ -4,7 +4,7 @@ Morgonskärm för Nest Hub: tåg Knivsta -> Stockholm C, väder och nyheter.
 Krav:  Python 3.11+  och  pip install catt truststore
        Trafikverket-nyckeln i miljövariabeln TRV_KEY (setx TRV_KEY "...")
 Kör:   python morgonskarm.py
-Test:  öppna http://localhost:8765 i webbläsaren på datorn
+Test:  öppna http://localhost:8766 i webbläsaren på datorn
 """
 import json, os, socket, subprocess, sys, threading, time, datetime as dt
 import urllib.request, xml.etree.ElementTree as ET
@@ -19,12 +19,16 @@ truststore.inject_into_ssl()
 TRV_KEY      = os.environ.get("TRV_KEY", "KLISTRA_IN_DIN_TRAFIKVERKET_NYCKEL")
 FROM_STATION = "Knivsta"
 TO_STATION   = "Stockholm C"
+# Claude: Added because SL pendeltåg ends at Stockholm City instead of Stockholm C.
+TO_STATION_ALT = "Stockholm City"
 # Claude: Changed so that the name matches the Hub because catt scan found it as "Lilla rara" (192.168.0.38).
 # NEST_NAME    = "Nest Hub"          # exakt namn från:  catt scan
 NEST_NAME    = "Lilla rara"        # exakt namn från:  catt scan
 NEWS_FEED    = "https://www.svt.se/nyheter/rss.xml"   # byt till Omnis RSS-adress om du hittar en
 LAT, LON     = 59.726, 17.789      # Knivsta
-PORT         = 8765
+# Claude: Changed so that the port is 8766 because the Game Developer project's http.server already uses 8765; now it works like: no clash, localhost:8766 is always NestBoard.
+# PORT         = 8765
+PORT         = 8766
 CAST_DAYS    = {0, 1, 2, 3, 4}     # mån–fre
 CAST_FROM, CAST_TO = 6, 9          # visa på Nest Hub 06:00–09:00
 RECAST_MIN   = 15                  # casta om var 15:e min ifall den tappat sidan
@@ -79,9 +83,16 @@ def trains():
 
     # Avgångar från Knivsta + ankomster till Stockholm C; matchas på tågnummer
     # så att bara tåg som faktiskt går Knivsta -> Stockholm C visas.
-    res = trv(q(a, "Avgang", "-00:20:00", "02:00:00") + q(b, "Ankomst", "-00:20:00", "03:30:00"))
+    # Claude: Changed so that arrivals at Stockholm City are also fetched because SL pendeltåg stops there, not at Stockholm C; now it works like: a train counts if it reaches Stockholm C or Stockholm City.
+    # res = trv(q(a, "Avgang", "-00:20:00", "02:00:00") + q(b, "Ankomst", "-00:20:00", "03:30:00"))
+    # deps = res[0].get("TrainAnnouncement", [])
+    # arrs = {t["AdvertisedTrainIdent"]: t for t in res[1].get("TrainAnnouncement", [])}
+    c = signature(TO_STATION_ALT)
+    res = trv(q(a, "Avgang", "-00:20:00", "02:00:00") + q(b, "Ankomst", "-00:20:00", "03:30:00")
+              + q(c, "Ankomst", "-00:20:00", "03:30:00"))
     deps = res[0].get("TrainAnnouncement", [])
-    arrs = {t["AdvertisedTrainIdent"]: t for t in res[1].get("TrainAnnouncement", [])}
+    arrs = {t["AdvertisedTrainIdent"]: t for t in res[2].get("TrainAnnouncement", [])}
+    arrs.update({t["AdvertisedTrainIdent"]: t for t in res[1].get("TrainAnnouncement", [])})
 
     out = []
     for t in deps:
