@@ -7,7 +7,7 @@ Kör:   python morgonskarm.py
 Test:  öppna http://localhost:8766 i webbläsaren på datorn
 """
 import email.utils, json, os, re, socket, subprocess, sys, threading, time, datetime as dt
-import urllib.request, xml.etree.ElementTree as ET
+import urllib.parse, urllib.request, xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # Claude: Added truststore because Trafikverket's server sends an incomplete certificate chain that Python can't verify on its own; now it works like: Python uses Windows' certificate handling, same as the browser.
 import truststore
@@ -48,6 +48,16 @@ MAX_TRAINS   = 5
 # =========================================================
 
 TRV_URL = "https://api.trafikinfo.trafikverket.se/v2/data.json"
+
+
+# Claude: Added log() so that messages end up in nestboard.log (pythonw has no window to print to).
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nestboard.log")
+def log(msg):
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{dt.datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
+    except Exception:
+        pass
 
 
 def http(url, data=None, headers=None):
@@ -319,12 +329,15 @@ def train_window(now=None):
 #                 data[key + "_error"] = str(e)
 #         _cache.update(t=time.time(), data=data)
 #         return data
+VERSION = str(int(time.time()))   # Claude: Added; changes every time the script starts.
 _cache = {}                       # key -> (tid, värde eller None, fel eller None)
 _lock = threading.Lock()
 def get_data():
     with _lock:
         tw = train_window()
-        data = {"updated": dt.datetime.now().strftime("%H:%M"), "train_window": tw}
+        # Claude: Added "version" so that the page reloads itself when the script has been restarted (the Hub otherwise keeps running an old copy of the page).
+        # data = {"updated": dt.datetime.now().strftime("%H:%M"), "train_window": tw}
+        data = {"updated": dt.datetime.now().strftime("%H:%M"), "train_window": tw, "version": VERSION}
         for key, fn in (("trains", trains), ("weather", weather), ("news", news), ("day", day_info)):
             if key == "trains" and not tw:
                 data["trains"] = []
@@ -423,6 +436,12 @@ body.dim{filter:brightness(.45)}
  <div class="card" data-v="news"><h2>Nyheter</h2><ul id="news"></ul></div>
 </section>
 <div id="detail"></div>
+<!-- Claude: Added a separate, old-style (ES5) script that runs first, so that errors in the Hub's browser (even syntax errors in the main script) end up in nestboard.log on the PC, plus the browser version once at start. -->
+<script>
+function report(m){try{new Image().src="/log?m="+encodeURIComponent(String(m).slice(0,1500));}catch(x){}}
+window.onerror=function(m,s,l,c,e){report("onerror: "+m+" @"+l+":"+c+" "+(e&&e.stack||""));};
+report("start: "+navigator.userAgent+" "+innerWidth+"x"+innerHeight);
+</script>
 <script>
 const $=id=>document.getElementById(id);
 const DIM_FROM=__DIM_FROM__;   // Claude: Added; filled in from DIM_FROM in the Python settings when the page is served.
@@ -433,6 +452,8 @@ function clock(){const d=new Date();$("clock").textContent=d.toLocaleTimeString(
 async function load(){
  try{
   const d=await (await fetch("/data")).json();
+  // Claude: Added so that the page reloads itself if the script on the PC has been restarted with new code.
+  if(window.PV===undefined)window.PV=d.version;else if(d.version!==window.PV){location.reload();return;}
   $("upd").textContent="Uppdaterad "+d.updated;
   // Claude: Added so the header shows e.g. "Måndag 26 oktober · v.44 · Amanda, Rasmus" plus holiday/flag day.
   const y=d.day;
@@ -466,7 +487,9 @@ async function load(){
    d.news.filter(n=>n.top||!d.train_window).map(n=>`<li>${n.src!=="SVT"?`<span class="src">${esc(n.src)}</span>`:""}${esc(n.title)}</li>`).join("");
   // Claude: Added so that an open big view is refreshed with the new data too.
   D=d; if(V)$("detail").innerHTML=views[V]();
- }catch(e){$("upd").textContent="Kunde inte hämta data";}
+ // Claude: Changed so that the error is also sent to the PC's log (nestboard.log), to see what goes wrong on the Hub.
+ // }catch(e){$("upd").textContent="Kunde inte hämta data";}
+ }catch(e){$("upd").textContent="Kunde inte hämta data";report("load: "+e+" "+(e&&e.stack||""));}
 }
 
 // Claude: Added the big views. Tap a part to open it, tap anywhere to go back; it also goes back by itself after 90 s.
@@ -516,6 +539,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/data"):
             body, ctype = json.dumps(get_data()).encode(), "application/json"
+        # Claude: Added /log so the page can report errors from the Hub; written to nestboard.log next to the script.
+        elif self.path.startswith("/log"):
+            msg = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("m", [""])[0]
+            log(f"{self.client_address[0]} {msg}")
+            body, ctype = b"", "text/plain"
         else:
             # Claude: Changed so that DIM_FROM is filled into the page.
             # body, ctype = PAGE.encode(), "text/html; charset=utf-8"
@@ -562,14 +590,17 @@ def cast_loop(url):
                 subprocess.run([sys.executable, "-m", "catt.cli", "-d", NEST_NAME, "cast_site", url], timeout=60)
                 casting, last = True, time.time()
                 print(f"{now:%H:%M} castar till {NEST_NAME}")
+                log(f"castar till {NEST_NAME}")   # Claude: Added so casting shows in nestboard.log.
             elif not in_window and casting:
                 # Claude: Changed the same way as cast_site above (catt via Python).
                 # subprocess.run(["catt", "-d", NEST_NAME, "stop"], timeout=60)
                 subprocess.run([sys.executable, "-m", "catt.cli", "-d", NEST_NAME, "stop"], timeout=60)
                 casting = False
                 print(f"{now:%H:%M} slutade casta")
+                log("slutade casta")   # Claude: Added.
         except Exception as e:
             print("Cast-fel:", e)
+            log(f"Cast-fel: {e}")   # Claude: Added.
         time.sleep(30)
 
 
