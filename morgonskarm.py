@@ -1,12 +1,12 @@
 """
 Morgonskärm för Nest Hub: tåg Knivsta -> Stockholm C, väder och nyheter.
 
-Krav:  Python 3.11+  och  pip install catt truststore
+Krav:  Python 3.11+  och  pip install catt truststore edge-tts
        Trafikverket-nyckeln i miljövariabeln TRV_KEY (setx TRV_KEY "...")
 Kör:   python morgonskarm.py
 Test:  öppna http://localhost:8766 i webbläsaren på datorn
 """
-import email.utils, json, os, re, socket, subprocess, sys, threading, time, datetime as dt
+import email.utils, json, os, re, socket, subprocess, sys, tempfile, threading, time, datetime as dt
 import urllib.parse, urllib.request, xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # Claude: Added truststore because Trafikverket's server sends an incomplete certificate chain that Python can't verify on its own; now it works like: Python uses Windows' certificate handling, same as the browser.
@@ -43,6 +43,11 @@ TRAIN_FROM, TRAIN_TO = dt.time(6, 0), dt.time(9, 30)   # tåg visas bara då, oc
 DIM_FROM     = 21                  # skärmen dimmas från kl 21
 # Claude: Added so that each source is fetched only as often as it changes (seconds).
 REFRESH      = {"trains": 50, "news": 300, "weather": 900, "day": 50}
+# Claude: Added settings for spoken train alerts on the Hub.
+ALERTS_ON    = True
+ALERT_MIN_DELAY = 5                # säg till vid minst så här många minuters försening
+ALERT_AHEAD_MIN = 60               # bara tåg som avgår inom så här många minuter
+ALERT_VOICE  = "sv-SE-SofieNeural"
 RECAST_MIN   = 15                  # casta om var 15:e min ifall den tappat sidan
 MAX_TRAINS   = 5
 # =========================================================
@@ -612,6 +617,67 @@ def local_ip():
         s.close()
 
 
+# Claude: Added catt() with a lock so that a spoken alert and the regular re-cast never talk to the Hub at the same time. Output is captured because pythonw has no console.
+_cast_lock = threading.RLock()
+def catt(*args, timeout=60):
+    with _cast_lock:
+        r = subprocess.run([sys.executable, "-m", "catt.cli", "-d", NEST_NAME, *args], timeout=timeout,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace")
+    if r.returncode:
+        raise RuntimeError(f"catt {args[0]}: {r.stderr.strip()[-300:]}")
+
+
+# Claude: Added speak(): makes a clip of the text, plays it on the Hub and then always brings the screen back. Raises an error if it could not be played.
+def speak(text, url):
+    path = os.path.join(tempfile.gettempdir(), "nestboard_alert.mp3")
+    subprocess.run([sys.executable, "-m", "edge_tts", "--voice", ALERT_VOICE, "--text", text, "--write-media", path],
+                   timeout=60, check=True, stdin=subprocess.DEVNULL, capture_output=True)
+    with _cast_lock:
+        try:
+            catt("cast", path)
+        finally:
+            catt("cast_site", url)
+    log(f"sa: {text}")
+
+
+# Claude: Added new_alerts(): picks what is worth saying and remembers it in "sent", so each train is announced once; again only if it gets cancelled or at least ALERT_MIN_DELAY minutes later than last said.
+def new_alerts(train_list, now, sent):
+    msgs, updates = [], {}
+    for t in train_list:
+        h, m = map(int, t["time"].split(":"))
+        adv = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if (adv - now).total_seconds() > ALERT_AHEAD_MIN * 60:
+            continue
+        key = f"{now:%Y-%m-%d} {t['time']}"
+        last = sent.get(key)
+        if t["cancelled"]:
+            if last != "cancelled":
+                msgs.append(f"Tåget {t['time']} mot Stockholm är inställt.")
+                updates[key] = "cancelled"
+        elif t["delay"] >= ALERT_MIN_DELAY and last != "cancelled" and (last is None or t["delay"] >= last + ALERT_MIN_DELAY):
+            msgs.append(f"Tåget {t['time']} mot Stockholm är {t['delay']} minuter försenat. Ny avgång {t['new']}.")
+            updates[key] = t["delay"]
+    return msgs, updates
+
+
+# Claude: Added alert_loop(): checks the trains every minute during the train window. "sent" is updated only after the message has played, so a failed attempt is retried next minute.
+def alert_loop(url):
+    sent = {}
+    while True:
+        try:
+            if ALERTS_ON and train_window():
+                d = get_data()
+                now = dt.datetime.now()
+                if "trains" in d and _cache.get("trains", (0, None, "fel"))[2] is None:
+                    msgs, updates = new_alerts(d["trains"], now, sent)
+                    if msgs:
+                        speak(" ".join(msgs), url)
+                        sent.update(updates)
+        except Exception as e:
+            log(f"Alert-fel: {e}")
+        time.sleep(60)
+
+
 def cast_loop(url):
     casting, last = False, 0
     while True:
@@ -632,14 +698,18 @@ def cast_loop(url):
             if in_window and (not casting or time.time() - last > RECAST_MIN * 60):
                 # Claude: Changed so that catt is run via Python because catt.exe isn't on PATH; now it works like: the same Python that runs this script starts catt.
                 # subprocess.run(["catt", "-d", NEST_NAME, "cast_site", url], timeout=60)
-                subprocess.run([sys.executable, "-m", "catt.cli", "-d", NEST_NAME, "cast_site", url], timeout=60)
+                # Claude: Changed to catt() (see above).
+                # subprocess.run([sys.executable, "-m", "catt.cli", "-d", NEST_NAME, "cast_site", url], timeout=60)
+                catt("cast_site", url)
                 casting, last = True, time.time()
                 print(f"{now:%H:%M} castar till {NEST_NAME}")
                 log(f"castar till {NEST_NAME}")   # Claude: Added so casting shows in nestboard.log.
             elif not in_window and casting:
                 # Claude: Changed the same way as cast_site above (catt via Python).
                 # subprocess.run(["catt", "-d", NEST_NAME, "stop"], timeout=60)
-                subprocess.run([sys.executable, "-m", "catt.cli", "-d", NEST_NAME, "stop"], timeout=60)
+                # Claude: Changed to catt() (see above).
+                # subprocess.run([sys.executable, "-m", "catt.cli", "-d", NEST_NAME, "stop"], timeout=60)
+                catt("stop")
                 casting = False
                 print(f"{now:%H:%M} slutade casta")
                 log("slutade casta")   # Claude: Added.
@@ -653,4 +723,5 @@ if __name__ == "__main__":
     url = f"http://{local_ip()}:{PORT}"
     print(f"Morgonskärm kör på {url}  (testa i webbläsaren)")
     threading.Thread(target=cast_loop, args=(url,), daemon=True).start()
+    threading.Thread(target=alert_loop, args=(url,), daemon=True).start()   # Claude: Added spoken train alerts.
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
