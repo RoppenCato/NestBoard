@@ -47,6 +47,8 @@ REFRESH      = {"trains": 50, "news": 300, "weather": 900, "day": 50}
 ALERTS_ON    = True
 ALERT_MIN_DELAY = 5                # säg till vid minst så här många minuters försening
 ALERT_AHEAD_MIN = 60               # bara tåg som avgår inom så här många minuter
+# Claude: Added because the usual trains are 07:50 and 08:20; now it works like: the Hub only speaks during these times, and only about trains departing during these times.
+ALERT_FROM, ALERT_TO = dt.time(7, 0), dt.time(9, 0)
 ALERT_VOICE  = "sv-SE-SofieNeural"
 RECAST_MIN   = 15                  # casta om var 15:e min ifall den tappat sidan
 MAX_TRAINS   = 5
@@ -643,10 +645,16 @@ def speak(text, url):
 # Claude: Added new_alerts(): picks what is worth saying and remembers it in "sent", so each train is announced once; again only if it gets cancelled or at least ALERT_MIN_DELAY minutes later than last said.
 def new_alerts(train_list, now, sent):
     msgs, updates = [], {}
+    # Claude: Added so that nothing is said outside ALERT_FROM–ALERT_TO.
+    if not ALERT_FROM <= now.time() <= ALERT_TO:
+        return msgs, updates
     for t in train_list:
         h, m = map(int, t["time"].split(":"))
         adv = now.replace(hour=h, minute=m, second=0, microsecond=0)
         if (adv - now).total_seconds() > ALERT_AHEAD_MIN * 60:
+            continue
+        # Claude: Added so that trains departing outside ALERT_FROM–ALERT_TO are not announced.
+        if not ALERT_FROM <= adv.time() <= ALERT_TO:
             continue
         key = f"{now:%Y-%m-%d} {t['time']}"
         last = sent.get(key)

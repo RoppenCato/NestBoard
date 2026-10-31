@@ -55,7 +55,7 @@ Robin needs a free key from Trafikverket's own registration ("Trafikverkets öpp
 - News: SVT national + SVT Uppsala. Header: date, week, name days, holiday/flag day (sholiday.faboul.se).
 - Fixed: `TrainStation` schema 1.4, `truststore` for Trafikverket SSL, catt run via `python -m catt.cli`.
 
-- Spoken train alerts on the Hub (`alert_loop`, `speak`, `new_alerts`): inside the train window, for trains leaving within 60 min, on cancellation or a delay of 5+ min. Repeated only if cancelled or 5+ min later than last said. Voice via `edge-tts` (text goes to Microsoft), played with `catt cast`, which blocks until the clip ends; the screen is then re-cast. "Already said" is kept in memory, so a script restart can repeat an alert. Settings: `ALERTS_ON`, `ALERT_MIN_DELAY`, `ALERT_AHEAD_MIN`, `ALERT_VOICE`.
+- Spoken train alerts on the Hub (`alert_loop`, `speak`, `new_alerts`): 07:00-09:00 on workdays, for trains departing 07:00-09:00 and within 60 min (usual trains are 07:50 and 08:20), on cancellation or a delay of 5+ min. Repeated only if cancelled or 5+ min later than last said. Voice via `edge-tts` (text goes to Microsoft), played with `catt cast`, which blocks until the clip ends; the screen is then re-cast. "Already said" is kept in memory, so a script restart can repeat an alert. Settings: `ALERTS_ON`, `ALERT_FROM`, `ALERT_TO`, `ALERT_MIN_DELAY`, `ALERT_AHEAD_MIN`, `ALERT_VOICE`.
 
 ## Unverified / likely first-run issues
 - `schemaversion` values: `TrainAnnouncement` 1.9 and `TrainStation` 1.5. If Trafikverket rejects them, check the current versions in their data model docs.
